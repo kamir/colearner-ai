@@ -1,4 +1,5 @@
 # colearner-ai
+![Version](https://img.shields.io/badge/version-0.6.4-blue)
 ![colearner logo](docs/logo.png)
 
 ## 🧠 CoLearner — Learn Any Codebase, Faster
@@ -187,7 +188,12 @@ The primary goal is onboarding: learn only what you need to contribute effective
 - `CHANGELOG.md`: release notes.
 
 ## Status
-Minimal working loop + didactics commands implemented.
+Coaching workflow, evidence-backed planning/explain, and lesson record bundles implemented.
+
+## What’s New in 0.6.4
+- Lesson record bundle output (HTML/MD/JSON + evidence files).
+- Coach/learner stuck + hint workflow with evidence packs.
+- Coach inbox summary persisted to `.colearner/coach_inbox.json`.
 
 ## Safety Posture
 - Hard step limits per command (`COLEARNER_MAX_ITERATIONS`).
@@ -216,3 +222,21 @@ Toggles:
 When you run `learn`, CoLearner ensures you are on a dedicated branch.  
 Default behavior: auto-create `colearner/onboarding-<timestamp>` if you are on `main` or `master`.  
 Disable auto-branching by setting `COLEARNER_AUTO_BRANCH=0`.
+
+## Lesson Record Bundle
+`lesson record` generates a download bundle with metadata, summaries, and HTML:
+```
+.colearner/lesson-records/<session_id>/
+  metadata.json
+  summary.json
+  lesson.html
+  lesson.md
+  evidence/
+```
+
+## Coach + Student Flow (Short)
+1) Student: `round "<topic>"` → `learn --scan "<goal>"`
+2) Student: `next --menu` → `complete step-1` → `comment`/`insight`
+3) Student stuck: `stuck "<summary>"`
+4) Coach: `coach inbox hints` → `coach review <session_id>` → `coach hint <session_id>|<message>`
+5) Student: `sync` → `hint-ack <session_id>|<note>` → `close`
