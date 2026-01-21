@@ -44,15 +44,29 @@ Just:
 You, your code, and a guide that understands both.
 
 ## 🚀 Quick Start
+
+Run from this repo (local dev, runs against current repo):
 ```bash
 cd extensions/colearner
 npm install
-npm run dev
+npm run dev -- init
+npm run dev -- learn "ship first PR"
+```
+
+Run against any repo (build once, then call the CLI from that repo):
+```bash
+cd /path/to/eaat-master/extensions/colearner
+npm install
+npm run build
+```
+Then in the repo you want to learn:
+```bash
+node /path/to/eaat-master/extensions/colearner/dist/cli.js init
+node /path/to/eaat-master/extensions/colearner/dist/cli.js learn "ship first PR"
 ```
 
 Then:
 ```text
-colearner-ai learn onboarding
 colearner-ai explain auth flow
 colearner-ai practice data ingestion
 ```
@@ -93,6 +107,15 @@ Repo map complete -> learning plan created
 Outputs:
 - `.colearner/learning.json`
 - `.colearner/plan.md`
+
+## Use It In Your Repo
+1) `cd /path/to/your/repo`
+2) Run `init` and `learn` using one of the Quick Start methods.
+3) Optional: set `COLEARNER_SCOPE_ROOT=/path/to/your/repo` for strict file scope.
+
+## Keep It Updated
+- If using the submodule: update the parent repo, then run `npm install` and `npm run build` if dependencies changed.
+- If using a published package: `npx colearner-ai@latest ...`
 
 ## CLI Commands
 - `init`: initialize `.colearner/learning.json`.
@@ -138,8 +161,14 @@ Minimal working loop + didactics commands implemented.
 - Allowlisted file extensions (`COLEARNER_ALLOWED_EXTENSIONS`).
 - Scope enforcement via `COLEARNER_SCOPE_ROOT`.
 - No script execution by default.
+- Branch guard for learning plans (`COLEARNER_AUTO_BRANCH=1`).
 
 ## What I Will Not Do
 - Execute project scripts or binaries.
 - Read or write files outside `.colearner/` or the scope root.
 - Make network calls unless LLM/Kafka mode is configured.
+ 
+## Branch Guard (Learning Plans)
+When you run `learn`, CoLearner ensures you are on a dedicated branch.  
+Default behavior: auto-create `colearner/onboarding-<timestamp>` if you are on `main` or `master`.  
+Disable auto-branching by setting `COLEARNER_AUTO_BRANCH=0`.

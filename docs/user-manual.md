@@ -124,11 +124,17 @@ Use these commands in the CLI:
 - Allowlisted file extensions (`COLEARNER_ALLOWED_EXTENSIONS`).
 - Scope enforcement via `COLEARNER_SCOPE_ROOT`.
 - No script execution by default.
+- Branch guard for learning plans (`COLEARNER_AUTO_BRANCH=1`).
 
 ## What Co-Learner Will Not Do
 - Execute project scripts or binaries.
 - Read or write files outside `.colearner/` or the scope root.
 - Make network calls unless LLM/Kafka mode is configured.
+
+## Branch Guard (Learning Plans)
+When you run `learn`, Co-Learner ensures you are on a dedicated branch.  
+Default behavior: auto-create `colearner/onboarding-<timestamp>` if you are on `main` or `master`.  
+Disable auto-branching by setting `COLEARNER_AUTO_BRANCH=0`.
 
 ## Teacher Section: How the Didactics Work
 

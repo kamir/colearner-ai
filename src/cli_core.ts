@@ -60,6 +60,57 @@ function safeExecVersion(command: string): string {
   }
 }
 
+function parseBoolEnv(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function ensureLearningBranch(): string | null {
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return null;
+  }
+  let branch = '';
+  try {
+    branch = execSync('git rev-parse --abbrev-ref HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+  } catch {
+    return null;
+  }
+  if (!branch || branch === 'HEAD') {
+    return 'git is in a detached HEAD state; create a branch before learning.';
+  }
+  const isProtected = branch === 'main' || branch === 'master';
+  const isColearnerBranch = branch.startsWith('colearner/');
+  if (!isProtected || isColearnerBranch) {
+    return null;
+  }
+  const autoBranch = parseBoolEnv(process.env.COLEARNER_AUTO_BRANCH, true);
+  if (!autoBranch) {
+    return `please create a branch first: git checkout -b colearner/onboarding-${timestampSlug()}`;
+  }
+  const target = `colearner/onboarding-${timestampSlug()}`;
+  try {
+    execSync(`git checkout -b ${target}`, { stdio: ['ignore', 'pipe', 'pipe'] });
+    return `switched to ${target}`;
+  } catch {
+    return `failed to create branch; try: git checkout -b ${target}`;
+  }
+}
+
+function timestampSlug(): string {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(
+    now.getMinutes()
+  )}${pad(now.getSeconds())}`;
+}
+
 function detectMonorepo(root: string): string[] {
   const findings: string[] = [];
   if (existsSync(join(root, 'pnpm-workspace.yaml'))) {
@@ -213,6 +264,15 @@ export async function handleCommand(
 
   if (query.startsWith('learn ')) {
     const goals = query.replace(/^learn\s+/, '').split(',').map((g) => g.trim()).filter(Boolean);
+    const branchStatus = ensureLearningBranch();
+    if (branchStatus) {
+      if (branchStatus.startsWith('switched to')) {
+        write(`branch_guard: ${branchStatus}`);
+      } else {
+        write(`branch_guard: ${branchStatus}`);
+        return out;
+      }
+    }
     const repoSummary = await buildRepoSummary();
     const plan = await generateLearningPlan(goals, repoSummary, ctx.statePath);
     const planPath = writePlanMarkdown(ctx.statePath, goals, repoSummary, plan);
