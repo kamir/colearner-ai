@@ -7,10 +7,52 @@ import { createContext, handleCommand } from './cli_core.js';
 
 const agent = new Agent();
 const statePath = '.colearner/learning.json';
-const bus: Bus = process.env.COLEARNER_BUS === 'kafka' ? new KafkaBus() : new FileBus();
+const bus: Bus = process.env.COLEARNER_BUS === 'file' ? new FileBus() : new KafkaBus();
 const ctx = createContext(bus, statePath);
 
-const VERSION = '0.2.1';
+const VERSION = '0.6.4';
+const COMMANDS = [
+  'init',
+  'learn <goals>',
+  'learn --scan <goals>',
+  'level <junior|mid|senior>',
+  'next',
+  'next --menu',
+  'complete <step-id>',
+  'explain <topic>',
+  'practice <topic>',
+  'assess <exercise>|<response>',
+  'progress',
+  'comment <text>',
+  'insight <text>',
+  'history',
+  'history <session>',
+  'history all',
+  'history summary',
+  'round <name>',
+  'close',
+  'role <coach|student>',
+  'student <id>',
+  'session <id>',
+  'sync',
+  'coach inbox',
+  'coach inbox hints',
+  'coach assignments',
+  'stuck <summary>',
+  'hint-ack <session_id>|<note>',
+  'coach hint <session_id>|<message>',
+  'coach review <session_id>',
+  'lesson record',
+  'doctor',
+];
+const FLOW_GUIDE = [
+  '1) Pick depth: colearner-ai level junior|mid|senior',
+  '2) Create plan: colearner-ai learn --scan "your goal"',
+  '3) Follow next: colearner-ai next --menu',
+  '4) Explain/practice, then complete: colearner-ai complete step-1',
+  '5) Track progress: colearner-ai progress',
+  '6) Capture notes: colearner-ai comment "..." / insight "..."',
+];
 const BANNER = `
 ═══════════════════════════════════════════════
 ║         Welcome to CoLearner AI             ║
@@ -20,15 +62,24 @@ const BANNER = `
 ██╔════╝ ██╔═══██╗██║     ██╔════╝██╔══██╗██╔══██╗████╗  ██║██╔════╝██╔══██╗
 ██║  ███╗██║   ██║██║     █████╗  ███████║██████╔╝██╔██╗ ██║█████╗  ██████╔╝
 ██║   ██║██║   ██║██║     ██╔══╝  ██╔══██║██╔══██╗██║╚██╗██║██╔══╝  ██╔══██╗
-╚██████╔╝╚██████╔╝███████╗███████╗██║  ██║██║  ██║██║ ╚████║███████╗██║  ██║
+ ╚██████╔╝╚██████╔╝███████╗███████╗██║  ██║██║  ██║██║ ╚████║███████╗██║  ██║
  ╚═════╝  ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝
 Version: ${VERSION}
 `;
 
+function printHelp(): void {
+  console.log(BANNER);
+  console.log('Commands:');
+  COMMANDS.forEach((cmd) => console.log(`- ${cmd}`));
+  console.log('Flow guide:');
+  FLOW_GUIDE.forEach((step) => console.log(`- ${step}`));
+}
+
 async function runOnce(args: string[]): Promise<void> {
   const query = args.join(' ').trim();
-  if (query === 'help' || query === '--help' || query === '-h') {
-    console.log(BANNER);
+  if (query === 'help' || query === '--help' || query === '-h' || query === 'commands') {
+    printHelp();
+    return;
   }
   const menuEnabled = args.includes('--menu') || process.env.COLEARNER_MENU === '1';
   if (query.startsWith('next') && menuEnabled) {
@@ -57,6 +108,11 @@ async function runRepl(): Promise<void> {
     }
     if (query === 'exit' || query === 'quit') {
       rl.close();
+      return;
+    }
+    if (query === 'help' || query === '--help' || query === '-h' || query === 'commands') {
+      printHelp();
+      rl.prompt();
       return;
     }
     if (query.startsWith('next --menu') || query === 'next --menu') {

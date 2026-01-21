@@ -7,6 +7,12 @@ export type EventType =
   | 'assessment_feedback'
   | 'assessment_feedback_ack'
   | 'progress_update'
+  | 'session_started'
+  | 'session_closed'
+  | 'session_history'
+  | 'stuck_reported'
+  | 'coach_hint'
+  | 'hint_ack'
   | 'evidence_snapshot'
   | 'evidence_request'
   | 'scope_policy'
@@ -58,6 +64,18 @@ export function validatePayload(event: EventEnvelope): boolean {
       return typeof payload.status === 'string';
     case 'progress_update':
       return Array.isArray(payload.completed) || typeof payload.confidence === 'object';
+    case 'session_started':
+      return typeof payload.session_id === 'string' || typeof payload.student_id === 'string';
+    case 'session_closed':
+      return typeof payload.session_id === 'string' || typeof payload.summary === 'object';
+    case 'session_history':
+      return typeof payload.session_id === 'string' || Array.isArray(payload.events);
+    case 'stuck_reported':
+      return typeof payload.session_id === 'string' && typeof payload.summary === 'string';
+    case 'coach_hint':
+      return typeof payload.session_id === 'string' && typeof payload.hint === 'string';
+    case 'hint_ack':
+      return typeof payload.session_id === 'string' && typeof payload.note === 'string';
     case 'evidence_snapshot':
       return typeof payload.path === 'string';
     case 'evidence_request':

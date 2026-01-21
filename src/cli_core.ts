@@ -16,6 +16,7 @@ import { fileRead } from './tools/file_read.js';
 import { dirname, join } from 'path';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, type Dirent } from 'fs';
 import { execSync } from 'child_process';
+import { createHash } from 'crypto';
 
 export interface CliContext {
   bus: Bus;
@@ -35,6 +36,9 @@ export function createContext(bus: Bus, statePath: string): CliContext {
       'colearner.assignments.v1': { offset: 0 },
       'colearner.feedback.v1': { offset: 0 },
       'colearner.events.v1': { offset: 0 },
+      'colearner.sessions.v1': { offset: 0 },
+      'colearner.history.v1': { offset: 0 },
+      'colearner.coach.v1': { offset: 0 },
     },
     role: 'student',
     sessionId,
@@ -314,6 +318,43 @@ function buildSafePrSuggestion(files: string[], keywords: string[]): string {
   return `add or improve a small test or doc note in ${topModule}${keywordHint}`;
 }
 
+function toRelativePath(path: string): string {
+  const cwd = process.cwd();
+  return path.startsWith(cwd) ? path.slice(cwd.length + 1) : path;
+}
+
+function selectEvidenceFiles(evidence: RepoEvidence, limit: number): string[] {
+  const ordered = [
+    ...evidence.testFiles,
+    ...evidence.codeFiles,
+    ...evidence.files.filter((file) => !evidence.testFiles.includes(file) && !evidence.codeFiles.includes(file)),
+  ];
+  return Array.from(new Set(ordered)).slice(0, limit);
+}
+
+function buildEvidencePack(stepTopic: string, goals: string[]): Array<{ path: string; hash: string; snippet: string }> {
+  const targets = extractPathsFromTopic(stepTopic);
+  const keywords = goals.length > 0 ? goals : stepTopic.split(/\s+/).slice(0, 6);
+  const evidence = buildRepoEvidence(keywords, 2);
+  const candidates = targets.length > 0 ? targets : selectEvidenceFiles(evidence, 3);
+  const pack: Array<{ path: string; hash: string; snippet: string }> = [];
+  for (const candidate of candidates.slice(0, 3)) {
+    const filePath = candidate;
+    if (!existsSync(filePath)) continue;
+    if (!isPathAllowed(filePath)) continue;
+    if (!isPathExtensionAllowed(filePath) && filePath !== 'Makefile') continue;
+    try {
+      const data = readFileSync(filePath, 'utf-8');
+      const hash = createHash('sha256').update(data).digest('hex').slice(0, 12);
+      const snippet = data.slice(0, 800);
+      pack.push({ path: toRelativePath(filePath), hash, snippet });
+    } catch {
+      continue;
+    }
+  }
+  return pack;
+}
+
 async function buildExplainEvidence(topic: string): Promise<string> {
   const targets = extractPathsFromTopic(topic);
   const snippets: string[] = [];
@@ -453,6 +494,176 @@ function summarizeHistory(events: LifecycleEvent[]): Array<{
     });
   }
   return summaries.sort((a, b) => a.first_ts.localeCompare(b.first_ts));
+}
+
+function buildSessionSummary(events: LifecycleEvent[]): {
+  first_ts: string;
+  last_ts: string;
+  stages: string[];
+  note_count: number;
+  insight_count: number;
+} {
+  if (events.length === 0) {
+    return { first_ts: '', last_ts: '', stages: [], note_count: 0, insight_count: 0 };
+  }
+  const sorted = events.slice().sort((a, b) => a.ts.localeCompare(b.ts));
+  const stages = Array.from(new Set(sorted.map((evt) => evt.stage)));
+  const note_count = sorted.filter((evt) => evt.stage === 'note').length;
+  const insight_count = sorted.filter((evt) => evt.stage === 'insight').length;
+  return {
+    first_ts: sorted[0]?.ts ?? '',
+    last_ts: sorted[sorted.length - 1]?.ts ?? '',
+    stages,
+    note_count,
+    insight_count,
+  };
+}
+
+function planSnapshot(statePath: string): Array<{ id: string; status: string }> {
+  const state = loadState(statePath);
+  return state.plan.map((step) => ({ id: step.id, status: step.status }));
+}
+
+function extractNotes(events: LifecycleEvent[]): string[] {
+  return events
+    .filter((evt) => (evt.stage === 'note' || evt.stage === 'insight') && typeof evt.note === 'string')
+    .map((evt) => `${evt.stage}: ${evt.note as string}`);
+}
+
+function resolveBranchInfo(): { branch: string; commit: string } {
+  try {
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+    const commit = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+    return { branch, commit };
+  } catch {
+    return { branch: 'unknown', commit: 'unknown' };
+  }
+}
+
+function recentNotes(statePath: string, sessionId: string): string[] {
+  const events = readLifecycle().filter((evt) => evt.session_id === sessionId);
+  return extractNotes(events).slice(-5);
+}
+
+function saveCoachInbox(summary: Map<string, {
+  started: boolean;
+  closed: boolean;
+  historyEvents: number;
+  studentId?: string;
+  first_ts?: string;
+  last_ts?: string;
+}>): void {
+  const out: Record<string, unknown> = {};
+  for (const [sessionId, item] of summary.entries()) {
+    out[sessionId] = item;
+  }
+  const path = '.colearner/coach_inbox.json';
+  const dir = dirname(path);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  writeFileSync(path, JSON.stringify(out, null, 2));
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function writeLessonBundle(
+  sessionId: string,
+  statePath: string,
+  branchInfo: { branch: string; commit: string },
+  evidencePack: Array<{ path: string; hash: string; snippet: string }>,
+  events: LifecycleEvent[]
+): string {
+  const baseDir = join('.colearner', 'lesson-records', sessionId);
+  const evidenceDir = join(baseDir, 'evidence');
+  mkdirSync(evidenceDir, { recursive: true });
+  const state = loadState(statePath);
+  const objectives = state.plan.map((step) => step.topic);
+  const achievements = state.progress.completed;
+  const notes = extractNotes(events);
+  const summary = buildSessionSummary(events);
+  const metadata = {
+    session_id: sessionId,
+    goals: state.learner.goals,
+    learner_level: state.learner.level,
+    branch: branchInfo.branch,
+    commit: branchInfo.commit,
+    summary,
+  };
+  const summaryData = {
+    objectives,
+    achievements,
+    contributions: achievements.length > 0 ? [`completed ${achievements.length} plan steps`] : [],
+    notes,
+    plan_snapshot: planSnapshot(statePath),
+    evidence: evidencePack.map((item) => ({ path: item.path, hash: item.hash })),
+  };
+  writeFileSync(join(baseDir, 'metadata.json'), JSON.stringify(metadata, null, 2));
+  writeFileSync(join(baseDir, 'summary.json'), JSON.stringify(summaryData, null, 2));
+  const md = [
+    `# Lesson Record (${sessionId})`,
+    '',
+    `Branch: ${branchInfo.branch} (${branchInfo.commit})`,
+    '',
+    '## Goals',
+    ...(state.learner.goals.length ? state.learner.goals.map((goal) => `- ${goal}`) : ['- none']),
+    '',
+    '## Objectives',
+    ...objectives.map((item) => `- ${item}`),
+    '',
+    '## Achievements',
+    ...(achievements.length ? achievements.map((item) => `- ${item}`) : ['- none']),
+    '',
+    '## Notes & Insights',
+    ...(notes.length ? notes.map((note) => `- ${note}`) : ['- none']),
+    '',
+    '## Evidence',
+    ...evidencePack.map((item, idx) => `- evidence/${idx + 1}-${item.hash}.txt (${item.path})`),
+    '',
+  ].join('\n');
+  writeFileSync(join(baseDir, 'lesson.md'), md);
+  const html = [
+    '<!doctype html>',
+    '<html><head><meta charset="utf-8"><title>Lesson Record</title>',
+    '<style>body{font-family:Arial,Helvetica,sans-serif;margin:24px;line-height:1.5}code,pre{background:#f5f5f5;padding:2px 4px}</style>',
+    '</head><body>',
+    `<h1>Lesson Record (${escapeHtml(sessionId)})</h1>`,
+    `<p><strong>Branch:</strong> ${escapeHtml(branchInfo.branch)} (${escapeHtml(branchInfo.commit)})</p>`,
+    '<h2>Goals</h2><ul>',
+    ...(state.learner.goals.length ? state.learner.goals.map((goal) => `<li>${escapeHtml(goal)}</li>`) : ['<li>none</li>']),
+    '</ul>',
+    '<h2>Objectives</h2><ul>',
+    ...objectives.map((item) => `<li>${escapeHtml(item)}</li>`),
+    '</ul>',
+    '<h2>Achievements</h2><ul>',
+    ...(achievements.length ? achievements.map((item) => `<li>${escapeHtml(item)}</li>`) : ['<li>none</li>']),
+    '</ul>',
+    '<h2>Notes & Insights</h2><ul>',
+    ...(notes.length ? notes.map((note) => `<li>${escapeHtml(note)}</li>`) : ['<li>none</li>']),
+    '</ul>',
+    '<h2>Evidence</h2><ul>',
+    ...evidencePack.map((item, idx) => `<li>evidence/${idx + 1}-${escapeHtml(item.hash)}.txt (${escapeHtml(item.path)})</li>`),
+    '</ul>',
+    '</body></html>',
+  ].join('\n');
+  writeFileSync(join(baseDir, 'lesson.html'), html);
+  evidencePack.forEach((item, idx) => {
+    const content = `path: ${item.path}\nhash: ${item.hash}\n\n${item.snippet}`;
+    const name = `${idx + 1}-${item.hash}.txt`;
+    writeFileSync(join(evidenceDir, name), content);
+  });
+  return baseDir;
 }
 
 function fileContentMatches(path: string, keywords: string[]): boolean {
@@ -685,6 +896,11 @@ export async function handleCommand(
   if (query === 'init') {
     const state = loadState(ctx.statePath);
     saveState(ctx.statePath, state);
+    const event = buildEvent(ctx.role, ctx.sessionId, 'session_started', {
+      session_id: ctx.sessionId,
+      student_id: ctx.studentId,
+    });
+    await publish(ctx, 'colearner.sessions.v1', event);
     write(`initialized: ${ctx.statePath}`);
     return out;
   }
@@ -837,6 +1053,12 @@ export async function handleCommand(
     appendLifecycle(evt);
     const event = buildEvent(ctx.role, ctx.sessionId, 'lifecycle', { stage: 'init', note: evt.note, student_id: ctx.studentId });
     await publish(ctx, 'colearner.events.v1', event);
+    const started = buildEvent(ctx.role, ctx.sessionId, 'session_started', {
+      session_id: ctx.sessionId,
+      student_id: ctx.studentId,
+      note: evt.note,
+    });
+    await publish(ctx, 'colearner.sessions.v1', started);
     write(`round started: ${ctx.sessionId}`);
     return out;
   }
@@ -886,10 +1108,103 @@ export async function handleCommand(
     write(formatDashboard(dashboard));
     return out;
   }
+  if (query === 'coach inbox') {
+    const topics = ['colearner.sessions.v1', 'colearner.history.v1'];
+    const summary = new Map<string, {
+      started: boolean;
+      closed: boolean;
+      historyEvents: number;
+      studentId?: string;
+      first_ts?: string;
+      last_ts?: string;
+    }>();
+    for (const topic of topics) {
+      const res = await ctx.bus.readNew(topic, ctx.cursors[topic]);
+      ctx.cursors[topic] = res.cursor;
+      for (const event of res.events) {
+        if (!validateEventFull(event)) continue;
+        const current = summary.get(event.session_id) ?? {
+          started: false,
+          closed: false,
+          historyEvents: 0,
+          studentId: undefined,
+          first_ts: undefined,
+          last_ts: undefined,
+        };
+        const payload = event.payload as { student_id?: string; events?: unknown[] };
+        if (payload.student_id) {
+          current.studentId = payload.student_id;
+        }
+        current.first_ts = current.first_ts ?? event.ts;
+        current.last_ts = event.ts;
+        if (event.event_type === 'session_started') {
+          current.started = true;
+        } else if (event.event_type === 'session_closed') {
+          current.closed = true;
+        } else if (event.event_type === 'session_history') {
+          const count = Array.isArray(payload.events) ? payload.events.length : 0;
+          current.historyEvents = Math.max(current.historyEvents, count);
+        }
+        summary.set(event.session_id, current);
+      }
+    }
+    if (summary.size === 0) {
+      write('coach inbox: no new sessions');
+      return out;
+    }
+    const sorted = Array.from(summary.entries()).sort((a, b) => (b[1].last_ts ?? '').localeCompare(a[1].last_ts ?? ''));
+    for (const [sessionId, item] of sorted) {
+      const status = item.closed ? 'closed' : item.started ? 'started' : 'unknown';
+      const student = item.studentId ? ` student=${item.studentId}` : '';
+      const history = item.historyEvents ? ` history_events=${item.historyEvents}` : '';
+      const last = item.last_ts ? ` last=${item.last_ts}` : '';
+      write(`coach inbox: ${sessionId} status=${status}${student}${history}${last}`);
+    }
+    saveCoachInbox(summary);
+    return out;
+  }
+  if (query === 'coach inbox hints') {
+    const topic = 'colearner.coach.v1';
+    const res = await ctx.bus.readNew(topic, ctx.cursors[topic]);
+    ctx.cursors[topic] = res.cursor;
+    const summary = new Map<string, { stuck?: Record<string, unknown>; hint?: Record<string, unknown>; ack?: Record<string, unknown> }>();
+    for (const event of res.events) {
+      if (!validateEventFull(event)) continue;
+      const current = summary.get(event.session_id) ?? {};
+      if (event.event_type === 'stuck_reported') {
+        current.stuck = event.payload;
+      } else if (event.event_type === 'coach_hint') {
+        current.hint = event.payload;
+      } else if (event.event_type === 'hint_ack') {
+        current.ack = event.payload;
+      }
+      summary.set(event.session_id, current);
+    }
+    if (summary.size === 0) {
+      write('coach inbox hints: no new items');
+      return out;
+    }
+    for (const [sessionId, item] of summary.entries()) {
+      const stuck = item.stuck ? 'stuck' : 'no-stuck';
+      const hint = item.hint ? 'hint' : 'no-hint';
+      const ack = item.ack ? 'ack' : 'no-ack';
+      write(`coach inbox hints: ${sessionId} ${stuck} ${hint} ${ack}`);
+      if (item.stuck) {
+        write(`stuck: ${JSON.stringify(item.stuck)}`);
+      }
+      if (item.hint) {
+        write(`hint: ${JSON.stringify(item.hint)}`);
+      }
+      if (item.ack) {
+        write(`ack: ${JSON.stringify(item.ack)}`);
+      }
+    }
+    return out;
+  }
   if (query === 'sync') {
     const topics = ctx.role === 'coach'
       ? ['colearner.progress.v1', 'colearner.assignments.v1', 'colearner.feedback.v1']
-      : ['colearner.assignments.v1', 'colearner.feedback.v1', 'colearner.progress.v1'];
+      : ['colearner.assignments.v1', 'colearner.feedback.v1', 'colearner.progress.v1', 'colearner.coach.v1'];
     for (const topic of topics) {
       const res = await ctx.bus.readNew(topic, ctx.cursors[topic]);
       ctx.cursors[topic] = res.cursor;
@@ -900,9 +1215,121 @@ export async function handleCommand(
         if (!validateEventFull(event)) {
           continue;
         }
-        handleIncoming(ctx, event);
-        write(`[${topic}] ${event.event_type} ${JSON.stringify(event.payload)}`);
+        if (topic === 'colearner.coach.v1') {
+          if (event.event_type === 'coach_hint') {
+            write(`[${topic}] coach_hint ${JSON.stringify(event.payload)}`);
+          } else if (event.event_type === 'stuck_reported') {
+            write(`[${topic}] stuck_reported ${JSON.stringify(event.payload)}`);
+          } else if (event.event_type === 'hint_ack') {
+            write(`[${topic}] hint_ack ${JSON.stringify(event.payload)}`);
+          }
+        } else {
+          handleIncoming(ctx, event);
+          write(`[${topic}] ${event.event_type} ${JSON.stringify(event.payload)}`);
+        }
       }
+    }
+    return out;
+  }
+  if (query.startsWith('stuck ')) {
+    const summary = query.replace(/^stuck\s+/, '').trim();
+    if (!summary) {
+      write('stuck: missing summary');
+      return out;
+    }
+    const { branch, commit } = resolveBranchInfo();
+    const state = loadState(ctx.statePath);
+    const step = state.plan.find((item) => item.status === 'next') ?? state.plan[0];
+    const evidencePack = buildEvidencePack(step?.topic ?? summary, state.learner.goals ?? []);
+    const payload = {
+      session_id: ctx.sessionId,
+      student_id: ctx.studentId,
+      summary,
+      repo_root: process.cwd(),
+      branch,
+      commit,
+      step_id: step?.id ?? '',
+      step_topic: step?.topic ?? '',
+      plan_snapshot: planSnapshot(ctx.statePath),
+      notes: recentNotes(ctx.statePath, ctx.sessionId),
+      evidence_pack: evidencePack,
+    };
+    const event = buildEvent(ctx.role, ctx.sessionId, 'stuck_reported', payload);
+    await publish(ctx, 'colearner.coach.v1', event);
+    write('stuck report published');
+    return out;
+  }
+  if (query.startsWith('hint-ack ')) {
+    const rest = query.replace(/^hint-ack\s+/, '').trim();
+    const [sessionId, note] = rest.split('|').map((part) => part.trim());
+    if (!sessionId || !note) {
+      write('hint-ack usage: hint-ack <session_id>|<note>');
+      return out;
+    }
+    const payload = { session_id: sessionId, student_id: ctx.studentId, note };
+    const event = buildEvent(ctx.role, ctx.sessionId, 'hint_ack', payload);
+    await publish(ctx, 'colearner.coach.v1', event);
+    write('hint ack published');
+    return out;
+  }
+  if (query.startsWith('coach hint ')) {
+    const rest = query.replace(/^coach\s+hint\s+/, '');
+    const [sessionId, hint] = rest.split('|').map((part) => part.trim());
+    if (!sessionId || !hint) {
+      write('coach hint usage: coach hint <session_id>|<message>');
+      return out;
+    }
+    const payload = { session_id: sessionId, student_id: ctx.studentId, hint };
+    const event = buildEvent(ctx.role, ctx.sessionId, 'coach_hint', payload);
+    await publish(ctx, 'colearner.coach.v1', event);
+    write('coach hint published');
+    return out;
+  }
+  if (query.startsWith('coach review ')) {
+    const sessionId = query.replace(/^coach\s+review\s+/, '').trim();
+    if (!sessionId) {
+      write('coach review usage: coach review <session_id>');
+      return out;
+    }
+    const topic = 'colearner.coach.v1';
+    const res = await ctx.bus.readNew(topic, ctx.cursors[topic]);
+    ctx.cursors[topic] = res.cursor;
+    const stuckEvents = res.events.filter((evt) => evt.session_id === sessionId && evt.event_type === 'stuck_reported');
+    if (stuckEvents.length === 0) {
+      write(`coach review: no stuck reports for ${sessionId}`);
+      return out;
+    }
+    const latest = stuckEvents[stuckEvents.length - 1];
+    const payload = latest.payload as { evidence_pack?: Array<{ path?: string; hash?: string; snippet?: string }> };
+    const pack = Array.isArray(payload.evidence_pack) ? payload.evidence_pack : [];
+    write(`coach review: ${sessionId}`);
+    for (const item of pack) {
+      write(`file: ${item.path ?? 'unknown'} hash=${item.hash ?? ''}`);
+      write(`${item.snippet ?? ''}`);
+    }
+    return out;
+  }
+  if (query === 'lesson record') {
+    const events = readLifecycle().filter((evt) => evt.session_id === ctx.sessionId);
+    const { branch, commit } = resolveBranchInfo();
+    const state = loadState(ctx.statePath);
+    const step = state.plan.find((item) => item.status === 'next') ?? state.plan[0];
+    const evidencePack = buildEvidencePack(step?.topic ?? 'lesson', state.learner.goals ?? []);
+    const dir = writeLessonBundle(ctx.sessionId, ctx.statePath, { branch, commit }, evidencePack, events);
+    write(`lesson record created: ${dir}`);
+    return out;
+  }
+  if (query === 'coach assignments') {
+    const topic = 'colearner.assignments.v1';
+    const res = await ctx.bus.readNew(topic, ctx.cursors[topic]);
+    ctx.cursors[topic] = res.cursor;
+    if (res.events.length === 0) {
+      write('coach assignments: no new assignments');
+      return out;
+    }
+    for (const event of res.events) {
+      if (!validateEventFull(event)) continue;
+      write(`[${topic}] ${event.event_type} ${JSON.stringify(event.payload)}`);
     }
     return out;
   }
@@ -951,6 +1378,39 @@ export async function handleCommand(
     write(`try: colearner-ai complete ${next.step.id}`);
     write('try: colearner-ai progress');
     write('try: colearner-ai history');
+    return out;
+  }
+  if (query === 'close') {
+    const publishSummary = parseBoolEnv(process.env.COLEARNER_PUBLISH_SUMMARY, true);
+    const publishHistory = parseBoolEnv(process.env.COLEARNER_PUBLISH_HISTORY, true);
+    const all = readLifecycle();
+    const events = all.filter((evt) => evt.session_id === ctx.sessionId);
+    const summary = buildSessionSummary(events);
+    const snapshot = planSnapshot(ctx.statePath);
+    const notes = extractNotes(events);
+    if (publishSummary) {
+      const payload = {
+        session_id: ctx.sessionId,
+        student_id: ctx.studentId,
+        summary,
+        plan_snapshot: snapshot,
+      };
+      const event = buildEvent(ctx.role, ctx.sessionId, 'session_closed', payload);
+      await publish(ctx, 'colearner.sessions.v1', event);
+      write('session summary published');
+    }
+    if (publishHistory) {
+      const payload = {
+        session_id: ctx.sessionId,
+        student_id: ctx.studentId,
+        events,
+        notes,
+      };
+      const event = buildEvent(ctx.role, ctx.sessionId, 'session_history', payload);
+      await publish(ctx, 'colearner.history.v1', event);
+      write('session history published');
+    }
+    write('session closed');
     return out;
   }
   if (query.startsWith('comment ')) {

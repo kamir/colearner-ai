@@ -33,6 +33,8 @@ Optional overrides:
 
 No keys? CoLearner still runs in heuristic mode using repo structure and docs.
 
+Default bus mode is `kafka`. Set `COLEARNER_BUS=file` to use local FileBus instead.
+
 Tip: copy `env.example` to `.env` and fill in keys.
 
 3) Run the CLI
@@ -55,6 +57,11 @@ co-learner> map this repo
 Evidence-backed explain:
 ```text
 colearner-ai explain "docs/overview.md docs/architecture.md"
+```
+
+Built-in command list + flow guide:
+```text
+colearner-ai commands
 ```
 
 Kafka mode (optional):
@@ -150,6 +157,17 @@ Use these commands in the CLI:
 - `history <session>`: show lifecycle history for a specific session.
 - `history all`: show lifecycle history across all rounds.
 - `history summary`: show a grouped session summary.
+- `close`: publish session summary/history to coach topics (Kafka).
+- `coach inbox`: show session start/close events from Kafka topics.
+- `coach inbox` writes `.colearner/coach_inbox.json` sorted by most recent activity.
+- `coach inbox hints`: show stuck reports and hints.
+- `stuck <summary>`: publish a stuck report with branch/context and evidence pack.
+- `hint-ack <session_id>|<note>`: acknowledge a coach hint.
+- `coach hint <session_id>|<message>`: send a hint to a learner session.
+- `coach review <session_id>`: show the latest stuck evidence pack for a session.
+- `coach assignments`: list incoming assignments.
+- `lesson record`: generate a lesson record bundle in `.colearner/lesson-records/<session_id>/`.
+- `lesson record`: generate a lesson record bundle in `.colearner/lesson-records/<session_id>/`.
 - `evidence <path>|<note>`: send evidence with hash + snippet.
 - `request-evidence <path>|<reason>`: ask for evidence on a file or module.
 - `coach dashboard`: show aggregated progress for multiple students.
@@ -177,6 +195,27 @@ Use these commands in the CLI:
 - Execute project scripts or binaries.
 - Read or write files outside `.colearner/` or the scope root.
 - Make network calls unless LLM/Kafka mode is configured.
+
+## Session Close (Kafka)
+When `COLEARNER_BUS=kafka`:
+- `init`/`round` publishes `session_started` to `colearner.sessions.v1`
+- `close` publishes `session_closed` to `colearner.sessions.v1`
+- `colearner.history.v1` (`session_history`)
+
+Toggles:
+- `COLEARNER_PUBLISH_SUMMARY=1`
+- `COLEARNER_PUBLISH_HISTORY=1`
+
+## Lesson Record Bundle
+Use `lesson record` to generate a download bundle with metadata, summaries, and HTML:
+```
+.colearner/lesson-records/<session_id>/
+  metadata.json
+  summary.json
+  lesson.html
+  lesson.md
+  evidence/
+```
 
 ## Branch Guard (Learning Plans)
 When you run `learn`, Co-Learner ensures you are on a dedicated branch.  

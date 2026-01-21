@@ -83,6 +83,13 @@ npm run dev -- learn "ship first PR"
 
 Published install (same flow):
 ```bash
+npm install -g colearner-ai
+npx colearner-ai init
+npx colearner-ai learn "ship first PR"
+```
+
+Or run without install:
+```bash
 npx colearner-ai init
 npx colearner-ai learn "ship first PR"
 ```
@@ -99,6 +106,7 @@ Optional overrides:
 - `COLEARNER_MODEL` (optional)
 
 No keys? CoLearner still works in heuristic mode using repo structure and docs.
+Default bus mode is `kafka`. Set `COLEARNER_BUS=file` to use local FileBus instead.
 
 First success (creates a learning plan):
 ```text
@@ -107,6 +115,11 @@ Repo map complete -> learning plan created
 Outputs:
 - `.colearner/learning.json`
 - `.colearner/plan.md`
+
+Richer plan with repo evidence (docs/config/code):
+```bash
+colearner-ai learn --scan "ship first PR"
+```
 
 ## Use It In Your Repo
 1) `cd /path/to/your/repo`
@@ -118,15 +131,34 @@ Outputs:
 - If using a published package: `npx colearner-ai@latest ...`
 
 ## CLI Commands
+Run `colearner-ai commands` to print the built-in command list and flow guide.
 - `init`: initialize `.colearner/learning.json`.
 - `learn <goal1, goal2>`: create a learning plan.
-- `explain <topic>`: explain in 3 levels (basic → advanced).
+- `explain <topic>`: explain in 3 levels (basic → advanced) with evidence (files or keyword scan).
 - `practice <topic>`: generate a safe exercise.
 - `assess <exercise>|<response>`: evaluate your response.
 - `refactor <topic>`: propose a refactor and teach the why/how.
 - `progress`: show your learning state.
+- `level <junior|mid|senior>`: set onboarding depth before running `learn`.
+- `next`: show the next step in your learning plan.
+- `next --menu`: choose an action and run it.
+- `complete <step-id>`: mark a step complete and advance the plan.
+- `comment <text>`: add a learning note to the session history.
+- `insight <text>`: capture an insight in the session history.
+- `round <name>`: start a new learning round and persist the session id.
 - `lifecycle <stage>`: record a session stage.
 - `history`: show lifecycle history.
+- `history summary`: show a grouped session summary.
+- `close`: publish session summary/history to coach topics (Kafka).
+- `coach inbox`: show session start/close events from Kafka topics.
+- `coach inbox` writes `.colearner/coach_inbox.json` sorted by most recent activity.
+- `coach inbox hints`: show stuck reports and hints.
+- `stuck <summary>`: publish a stuck report with branch/context and evidence pack.
+- `hint-ack <session_id>|<note>`: acknowledge a coach hint.
+- `coach hint <session_id>|<message>`: send a hint to a learner session.
+- `coach review <session_id>`: show the latest stuck evidence pack for a session.
+- `coach assignments`: list incoming assignments.
+- `lesson record`: generate a lesson record bundle in `.colearner/lesson-records/<session_id>/`.
 - `doctor`: verify environment, repo scan, repo size, monorepo hints, env vars, and broker availability.
 
 ## Tools (Current)
@@ -151,6 +183,8 @@ The primary goal is onboarding: learn only what you need to contribute effective
 - `docs/agent-spec.md`: prompts, event schema, output contract.
 - `docs/didactics-spec.md`: didactics roadmap.
 - `docs/solution-proposal.md`: implementation plan.
+- `docs/project-checklist.md`: one-page checklist for onboarding your own repo.
+- `CHANGELOG.md`: release notes.
 
 ## Status
 Minimal working loop + didactics commands implemented.
@@ -167,6 +201,16 @@ Minimal working loop + didactics commands implemented.
 - Execute project scripts or binaries.
 - Read or write files outside `.colearner/` or the scope root.
 - Make network calls unless LLM/Kafka mode is configured.
+
+## Session Close (Kafka)
+When `COLEARNER_BUS=kafka`:
+- `init`/`round` publishes `session_started` to `colearner.sessions.v1`
+- `close` publishes `session_closed` to `colearner.sessions.v1`
+- `colearner.history.v1` (`session_history`)
+
+Toggles:
+- `COLEARNER_PUBLISH_SUMMARY=1`
+- `COLEARNER_PUBLISH_HISTORY=1`
  
 ## Branch Guard (Learning Plans)
 When you run `learn`, CoLearner ensures you are on a dedicated branch.  

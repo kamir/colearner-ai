@@ -1,6 +1,6 @@
 {
   "name": "colearner-ai",
-  "version": "0.2.1",
+  "version": "0.6.4",
   "private": false,
   "type": "module",
   "bin": {
@@ -17,7 +17,7 @@
     "dev": "tsx src/cli.ts",
     "build": "tsc",
     "start": "node dist/cli.js",
-    "test": "tsx tests/run.ts"
+    "test": "node --import tsx tests/run.ts"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
