@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'fs';
+import { readdirSync, readFileSync, type Dirent } from 'fs';
 import { join } from 'path';
 import type { Tool } from '../agent/types.js';
 
@@ -12,9 +12,9 @@ function listFiles(root: string, maxFiles: number): string[] {
   while (stack.length > 0 && out.length < maxFiles) {
     const dir = stack.pop();
     if (!dir) continue;
-    let entries: ReturnType<typeof readdirSync>;
+    let entries: Dirent[];
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      entries = readdirSync(dir, { withFileTypes: true }) as Dirent[];
     } catch {
       continue;
     }

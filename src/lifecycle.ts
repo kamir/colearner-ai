@@ -4,7 +4,7 @@ import { dirname } from 'path';
 export interface LifecycleEvent {
   ts: string;
   session_id: string;
-  stage: 'init' | 'plan' | 'practice' | 'review' | 'done';
+  stage: 'init' | 'plan' | 'practice' | 'review' | 'done' | 'note' | 'insight';
   note?: string;
 }
 

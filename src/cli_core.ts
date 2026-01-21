@@ -2,7 +2,7 @@ import type { Agent } from './agent/agent.js';
 import type { Bus, TopicCursor } from './kafka/bus.js';
 import { buildEvent, type EventEnvelope, validateEventFull } from './events.js';
 import { applyPlan, applyProgress, loadState, saveState } from './didactics/progress.js';
-import { appendLifecycle, readLifecycle } from './lifecycle.js';
+import { appendLifecycle, readLifecycle, type LifecycleEvent } from './lifecycle.js';
 import { generateLearningPlan } from './didactics/learning_plan.js';
 import { explainWithExamples } from './didactics/explain.js';
 import { generateExercise } from './didactics/exercise.js';
@@ -10,9 +10,11 @@ import { assessExercise } from './didactics/assessment.js';
 import { proposeRefactor } from './didactics/refactor.js';
 import { buildDashboard, formatDashboard } from './coach/dashboard.js';
 import { isPathAllowed } from './utils/scope.js';
+import { getMaxFileBytes, isPathExtensionAllowed } from './utils/safety.js';
 import { repoScan } from './tools/repo_scan.js';
+import { fileRead } from './tools/file_read.js';
 import { dirname, join } from 'path';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, type Dirent } from 'fs';
 import { execSync } from 'child_process';
 
 export interface CliContext {
@@ -25,6 +27,7 @@ export interface CliContext {
 }
 
 export function createContext(bus: Bus, statePath: string): CliContext {
+  const sessionId = loadSessionId();
   return {
     bus,
     cursors: {
@@ -34,14 +37,22 @@ export function createContext(bus: Bus, statePath: string): CliContext {
       'colearner.events.v1': { offset: 0 },
     },
     role: 'student',
-    sessionId: `session-${Date.now()}`,
+    sessionId,
     studentId: `student-${Math.floor(Math.random() * 10000)}`,
     statePath,
   };
 }
 
-async function buildRepoSummary(): Promise<string> {
-  const scan = (await repoScan.run({ root: process.cwd(), depth: 1 })) as {
+type RepoEvidence = {
+  text: string;
+  files: string[];
+  codeFiles: string[];
+  testFiles: string[];
+  keywords: string[];
+};
+
+async function buildRepoSummary(depth: number): Promise<string> {
+  const scan = (await repoScan.run({ root: process.cwd(), depth })) as {
     entries?: Array<{ name?: string; type?: string }>;
   };
   const entries = Array.isArray(scan?.entries) ? scan.entries : [];
@@ -50,6 +61,422 @@ async function buildRepoSummary(): Promise<string> {
     .filter(Boolean);
   const sample = names.slice(0, 20).join(', ');
   return `Root entries (${entries.length}): ${sample}`;
+}
+
+function sessionFilePath(): string {
+  return '.colearner/session.json';
+}
+
+function loadSessionId(): string {
+  const path = sessionFilePath();
+  if (!existsSync(path)) {
+    const fresh = `session-${Date.now()}`;
+    saveSessionId(fresh);
+    return fresh;
+  }
+  try {
+    const raw = readFileSync(path, 'utf-8');
+    const parsed = JSON.parse(raw) as { session_id?: string };
+    if (parsed.session_id) return parsed.session_id;
+  } catch {
+    // ignore
+  }
+  const fresh = `session-${Date.now()}`;
+  saveSessionId(fresh);
+  return fresh;
+}
+
+function saveSessionId(sessionId: string): void {
+  const path = sessionFilePath();
+  const dir = dirname(path);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  writeFileSync(path, JSON.stringify({ session_id: sessionId }, null, 2));
+}
+
+function startNewRound(name?: string): string {
+  const stamp = timestampSlug();
+  const suffix = name ? `-${name.replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 40)}` : '';
+  const sessionId = `round-${stamp}${suffix}`;
+  saveSessionId(sessionId);
+  return sessionId;
+}
+
+function buildRepoEvidence(goals: string[], depth: number): RepoEvidence {
+  const summary = [`Goals: ${goals.join(', ') || 'none'}`];
+  const keyFiles = [
+    'README.md',
+    'CONTRIBUTING.md',
+    'CODE_OF_CONDUCT.md',
+    'package.json',
+    'go.mod',
+    'pyproject.toml',
+    'Cargo.toml',
+    'Makefile',
+  ];
+  const configNames = new Set([
+    'Makefile',
+    'Dockerfile',
+    'docker-compose.yml',
+    'docker-compose.yaml',
+    '.env',
+    '.env.example',
+    'tsconfig.json',
+    'package.json',
+    'go.mod',
+    'pyproject.toml',
+    'Cargo.toml',
+  ]);
+  const keywords = goals
+    .join(' ')
+    .split(/[^a-zA-Z0-9]+/)
+    .map((word) => word.trim().toLowerCase())
+    .filter((word) => word.length > 3);
+  const snippets: string[] = [];
+  for (const file of keyFiles) {
+    if (!existsSync(file)) continue;
+    if (!isPathAllowed(file)) continue;
+    if (!isPathExtensionAllowed(file) && file !== 'Makefile') continue;
+    try {
+      const data = readFileSync(file, 'utf-8');
+      const head = data.split('\n').slice(0, 12).join('\n');
+      snippets.push(`--- ${file} ---\n${head}`);
+    } catch {
+      continue;
+    }
+  }
+  const evidenceFiles = collectEvidenceFiles(process.cwd(), depth, 120, keywords, configNames);
+  for (const file of evidenceFiles) {
+    if (!isPathAllowed(file)) continue;
+    if (!isPathExtensionAllowed(file) && !configNames.has(file)) continue;
+    try {
+      const data = readFileSync(file, 'utf-8');
+      const head = data.split('\n').slice(0, 20).join('\n');
+      snippets.push(`--- ${file} ---\n${head}`);
+    } catch {
+      continue;
+    }
+  }
+  if (snippets.length > 0) {
+    summary.push('Key files:\n' + snippets.join('\n\n'));
+  }
+  if (evidenceFiles.length > 0) {
+    summary.push(
+      'Relevant files:\n' + evidenceFiles.slice(0, 25).map((file) => `- ${file}`).join('\n')
+    );
+  }
+  summary.push(`Scan depth: ${depth}`);
+  const { codeFiles, testFiles } = classifyEvidenceFiles(evidenceFiles);
+  return {
+    text: summary.join('\n'),
+    files: evidenceFiles,
+    codeFiles,
+    testFiles,
+    keywords,
+  };
+}
+
+function collectEvidenceFiles(
+  root: string,
+  maxDepth: number,
+  maxFiles: number,
+  keywords: string[],
+  configNames: Set<string>
+): string[] {
+  const results: string[] = [];
+  const maxFileBytes = getMaxFileBytes();
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
+  const skipDirs = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.colearner']);
+  while (stack.length > 0 && results.length < maxFiles) {
+    const current = stack.pop();
+    if (!current) break;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(current.dir, { withFileTypes: true }) as Dirent[];
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (results.length >= maxFiles) break;
+      const name = entry.name;
+      if (name.startsWith('.')) {
+        if (!configNames.has(name)) continue;
+      }
+      const full = join(current.dir, name);
+      if (entry.isDirectory()) {
+        if (skipDirs.has(name)) continue;
+        if (current.depth + 1 <= maxDepth) {
+          stack.push({ dir: full, depth: current.depth + 1 });
+        }
+        continue;
+      }
+      const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')).toLowerCase() : '';
+      const isConfig = configNames.has(name);
+      const isAllowed = isPathExtensionAllowed(full) || isConfig;
+      if (!isAllowed) continue;
+      try {
+        const size = statSync(full).size;
+        if (size > maxFileBytes) continue;
+      } catch {
+        continue;
+      }
+      const lowerName = name.toLowerCase();
+      const matchesKeyword = keywords.length === 0 || keywords.some((word) => lowerName.includes(word));
+      const contentMatch = keywords.length > 0 && fileContentMatches(full, keywords);
+      const isDocsPath = full.includes(`${join(root, 'docs')}`) || full.includes(`${join(root, 'doc')}`);
+      const isConfigPath =
+        full.includes(`${join(root, 'config')}`) || full.includes(`${join(root, 'cfg')}`);
+      if (matchesKeyword || contentMatch || isDocsPath || isConfigPath || isConfig) {
+        results.push(full);
+      }
+    }
+  }
+  return results;
+}
+
+function classifyEvidenceFiles(files: string[]): { codeFiles: string[]; testFiles: string[] } {
+  const codeFiles: string[] = [];
+  const testFiles: string[] = [];
+  for (const file of files) {
+    const lower = file.toLowerCase();
+    const isTest =
+      lower.includes('/test/') ||
+      lower.includes('/tests/') ||
+      lower.includes('test_') ||
+      lower.includes('_test') ||
+      lower.includes('.spec.') ||
+      lower.includes('.test.');
+    if (isTest) {
+      testFiles.push(file);
+    } else {
+      codeFiles.push(file);
+    }
+  }
+  return { codeFiles, testFiles };
+}
+
+function enhancePlanWithLinks(
+  plan: Array<{ id: string; topic: string; status: string }>,
+  evidence: RepoEvidence
+): Array<{ id: string; topic: string; status: string }> {
+  if (plan.length === 0) return plan;
+  const enhanced = plan.map((step) => {
+    const topic = step.topic ?? '';
+    const fileLinks = pickFileLinks(topic, evidence);
+    const nextTopic = fileLinks.length > 0 ? `${topic} | Files: ${fileLinks.join(', ')}` : topic;
+    return { ...step, topic: nextTopic };
+  });
+  const safeSuggestion = buildSafePrSuggestion(evidence.codeFiles, evidence.keywords);
+  return enhanced.map((step) => {
+    if (step.id !== 'step-first-pr') return step;
+    const topic = step.topic ?? '';
+    const nextTopic = safeSuggestion ? `${topic} | safe PR suggestion: ${safeSuggestion}` : topic;
+    return { ...step, topic: nextTopic };
+  });
+}
+
+function pickFileLinks(topic: string, evidence: RepoEvidence): string[] {
+  const words = topic
+    .split(/[^a-zA-Z0-9]+/)
+    .map((word) => word.trim().toLowerCase())
+    .filter((word) => word.length > 3);
+  const rank = (file: string): number => {
+    const lower = file.toLowerCase();
+    if (evidence.testFiles.includes(file)) return 0;
+    if (evidence.codeFiles.includes(file)) return 1;
+    if (lower.includes('/docs') || lower.includes('/doc')) return 3;
+    if (lower.includes('/config') || lower.includes('/cfg')) return 4;
+    return 2;
+  };
+  const candidates = evidence.files.filter((file) => {
+    const lower = file.toLowerCase();
+    return words.some((word) => lower.includes(word));
+  });
+  const pool = candidates.length > 0 ? candidates : evidence.files;
+  const picks = pool.sort((a, b) => rank(a) - rank(b)).slice(0, 3);
+  return picks.map((file) => `\`${file}\``);
+}
+
+function buildSafePrSuggestion(files: string[], keywords: string[]): string {
+  if (files.length === 0) return '';
+  const moduleCounts = new Map<string, number>();
+  for (const file of files) {
+    const rel = file.startsWith(process.cwd()) ? file.slice(process.cwd().length + 1) : file;
+    const parts = rel.split('/').filter(Boolean);
+    if (parts.length === 0) continue;
+    const module = parts.length >= 2 ? `${parts[0]}/${parts[1]}` : parts[0];
+    moduleCounts.set(module, (moduleCounts.get(module) ?? 0) + 1);
+  }
+  const sorted = Array.from(moduleCounts.entries()).sort((a, b) => b[1] - a[1]);
+  const topModule = sorted[0]?.[0] ?? 'core module';
+  const keywordHint = keywords.length > 0 ? ` around "${keywords.join(', ')}"` : '';
+  return `add or improve a small test or doc note in ${topModule}${keywordHint}`;
+}
+
+async function buildExplainEvidence(topic: string): Promise<string> {
+  const targets = extractPathsFromTopic(topic);
+  const snippets: string[] = [];
+  if (targets.length > 0) {
+    for (const target of targets) {
+      if (!isPathAllowed(target)) {
+        snippets.push(`--- ${target} ---\nPath outside scope root.`);
+        continue;
+      }
+      if (!existsSync(target)) {
+        snippets.push(`--- ${target} ---\nFile not found.`);
+        continue;
+      }
+      try {
+        const result = await fileRead.run({ path: target, start: 0, end: 2000 });
+        const slice = (result as { slice?: string }).slice ?? '';
+        snippets.push(`--- ${target} ---\n${slice}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        snippets.push(`--- ${target} ---\nError: ${message}`);
+      }
+    }
+  }
+  if (snippets.length === 0) {
+    const keywords = topic
+      .split(/[^a-zA-Z0-9]+/)
+      .map((word) => word.trim().toLowerCase())
+      .filter((word) => word.length > 3);
+    const evidence = buildRepoEvidence(keywords, 2);
+    const picks = evidence.files.slice(0, 3);
+    for (const file of picks) {
+      if (!existsSync(file)) continue;
+      try {
+        const result = await fileRead.run({ path: file, start: 0, end: 2000 });
+        const slice = (result as { slice?: string }).slice ?? '';
+        snippets.push(`--- ${file} ---\n${slice}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        snippets.push(`--- ${file} ---\nError: ${message}`);
+      }
+    }
+  }
+  return snippets.length > 0 ? snippets.join('\n\n') : 'No evidence loaded.';
+}
+
+function extractPathsFromTopic(topic: string): string[] {
+  const candidates = topic.split(/[\s,]+/).map((part) => part.trim()).filter(Boolean);
+  const paths: string[] = [];
+  for (const candidate of candidates) {
+    if (candidate.includes('/') || candidate.includes('.')) {
+      const cleaned = candidate.replace(/[()'"]/g, '');
+      paths.push(cleaned);
+    }
+  }
+  return Array.from(new Set(paths));
+}
+
+function completePlanStep(statePath: string, stepId: string): { ok: boolean; message: string } {
+  const state = loadState(statePath);
+  const idx = state.plan.findIndex((step) => step.id === stepId);
+  if (idx === -1) {
+    return { ok: false, message: `unknown step: ${stepId}` };
+  }
+  const completed = new Set(state.progress.completed);
+  completed.add(stepId);
+  const plan = state.plan.map((step, index) => {
+    if (index === idx) {
+      return { ...step, status: 'done' };
+    }
+    if (step.status === 'next' && index !== idx) {
+      return { ...step, status: 'pending' };
+    }
+    return step;
+  });
+  const nextIndex = plan.findIndex((step) => step.status === 'pending');
+  if (nextIndex !== -1) {
+    plan[nextIndex] = { ...plan[nextIndex], status: 'next' };
+  }
+  saveState(statePath, {
+    ...state,
+    plan,
+    progress: { ...state.progress, completed: Array.from(completed) },
+  });
+  return { ok: true, message: `completed ${stepId}` };
+}
+
+function nextPlanStep(statePath: string): { ok: boolean; step?: { id: string; topic: string; status: string } } {
+  const state = loadState(statePath);
+  let step = state.plan.find((item) => item.status === 'next');
+  if (!step) {
+    step = state.plan.find((item) => item.status === 'pending');
+    if (step) {
+      state.plan = state.plan.map((item) =>
+        item.id === step?.id ? { ...item, status: 'next' } : item
+      );
+      saveState(statePath, state);
+    }
+  }
+  if (!step) {
+    return { ok: false };
+  }
+  return { ok: true, step };
+}
+
+function summarizeHistory(events: LifecycleEvent[]): Array<{
+  session_id: string;
+  first_ts: string;
+  last_ts: string;
+  stages: string[];
+  notes: string[];
+}> {
+  const bySession = new Map<string, LifecycleEvent[]>();
+  for (const evt of events) {
+    const list = bySession.get(evt.session_id) ?? [];
+    list.push(evt);
+    bySession.set(evt.session_id, list);
+  }
+  const summaries: Array<{
+    session_id: string;
+    first_ts: string;
+    last_ts: string;
+    stages: string[];
+    notes: string[];
+  }> = [];
+  for (const [sessionId, list] of bySession.entries()) {
+    const sorted = list.slice().sort((a, b) => a.ts.localeCompare(b.ts));
+    const stages = Array.from(new Set(sorted.map((evt) => evt.stage)));
+    const notes = sorted
+      .map((evt) => evt.note)
+      .filter((note): note is string => typeof note === 'string' && note.length > 0);
+    summaries.push({
+      session_id: sessionId,
+      first_ts: sorted[0]?.ts ?? '',
+      last_ts: sorted[sorted.length - 1]?.ts ?? '',
+      stages,
+      notes,
+    });
+  }
+  return summaries.sort((a, b) => a.first_ts.localeCompare(b.first_ts));
+}
+
+function fileContentMatches(path: string, keywords: string[]): boolean {
+  if (keywords.length === 0) return false;
+  try {
+    const data = readFileSync(path, 'utf-8');
+    const lower = data.toLowerCase();
+    return keywords.some((word) => lower.includes(word));
+  } catch {
+    return false;
+  }
+}
+
+function parseLearnArgs(query: string): { goals: string[]; scan: boolean } {
+  const rest = query.replace(/^learn\s*/, '');
+  const tokens = rest.split(' ').map((token) => token.trim()).filter(Boolean);
+  const scanIndex = tokens.indexOf('--scan');
+  const scan = scanIndex !== -1;
+  const cleaned = scan ? tokens.filter((token) => token !== '--scan') : tokens;
+  const goalText = cleaned.join(' ').trim();
+  const goals = goalText
+    ? goalText.split(',').map((goal) => goal.trim()).filter(Boolean)
+    : [];
+  return { goals, scan };
 }
 
 function safeExecVersion(command: string): string {
@@ -262,8 +689,8 @@ export async function handleCommand(
     return out;
   }
 
-  if (query.startsWith('learn ')) {
-    const goals = query.replace(/^learn\s+/, '').split(',').map((g) => g.trim()).filter(Boolean);
+  if (query.startsWith('learn')) {
+    const { goals, scan } = parseLearnArgs(query);
     const branchStatus = ensureLearningBranch();
     if (branchStatus) {
       if (branchStatus.startsWith('switched to')) {
@@ -273,12 +700,18 @@ export async function handleCommand(
         return out;
       }
     }
-    const repoSummary = await buildRepoSummary();
-    const plan = await generateLearningPlan(goals, repoSummary, ctx.statePath);
-    const planPath = writePlanMarkdown(ctx.statePath, goals, repoSummary, plan);
+    const depth = scan ? 2 : 1;
+    const repoSummary = await buildRepoSummary(depth);
+    const evidenceData = scan
+      ? buildRepoEvidence(goals, depth)
+      : { text: repoSummary, files: [], codeFiles: [], testFiles: [], keywords: [] };
+    const state = loadState(ctx.statePath);
+    const plan = await generateLearningPlan(goals, evidenceData.text, ctx.statePath, state.learner.level);
+    const enriched = scan ? enhancePlanWithLinks(plan, evidenceData) : plan;
+    const planPath = writePlanMarkdown(ctx.statePath, goals, evidenceData.text, enriched);
     write('Repo map complete -> learning plan created');
     write(`plan_path: ${planPath}`);
-    write(JSON.stringify(plan, null, 2));
+    write(JSON.stringify(enriched, null, 2));
     appendLifecycle({ ts: new Date().toISOString(), session_id: ctx.sessionId, stage: 'plan' });
     const event = buildEvent(ctx.role, ctx.sessionId, 'learning_plan', { goals, plan, student_id: ctx.studentId });
     await publish(ctx, 'colearner.progress.v1', event);
@@ -286,7 +719,8 @@ export async function handleCommand(
   }
   if (query.startsWith('explain ')) {
     const topic = query.replace(/^explain\s+/, '').trim();
-    const result = await explainWithExamples(topic, 'No evidence loaded.');
+    const evidence = await buildExplainEvidence(topic);
+    const result = await explainWithExamples(topic, evidence);
     write(result);
     return out;
   }
@@ -369,6 +803,17 @@ export async function handleCommand(
     }
     return out;
   }
+  if (query.startsWith('level ')) {
+    const next = query.replace(/^level\s+/, '').trim().toLowerCase();
+    if (next !== 'junior' && next !== 'mid' && next !== 'senior') {
+      write('level must be one of: junior, mid, senior');
+      return out;
+    }
+    const state = loadState(ctx.statePath);
+    saveState(ctx.statePath, { ...state, learner: { ...state.learner, level: next } });
+    write(`level set to ${next}`);
+    return out;
+  }
   if (query.startsWith('student ')) {
     ctx.studentId = query.replace(/^student\s+/, '').trim() || ctx.studentId;
     write(`student set to ${ctx.studentId}`);
@@ -376,15 +821,40 @@ export async function handleCommand(
   }
   if (query.startsWith('session ')) {
     ctx.sessionId = query.replace(/^session\s+/, '').trim() || ctx.sessionId;
+    saveSessionId(ctx.sessionId);
     write(`session set to ${ctx.sessionId}`);
+    return out;
+  }
+  if (query.startsWith('round')) {
+    const name = query.replace(/^round\s*/, '').trim();
+    ctx.sessionId = startNewRound(name || undefined);
+    const evt: LifecycleEvent = {
+      ts: new Date().toISOString(),
+      session_id: ctx.sessionId,
+      stage: 'init',
+      note: name ? `round: ${name}` : 'round: new',
+    };
+    appendLifecycle(evt);
+    const event = buildEvent(ctx.role, ctx.sessionId, 'lifecycle', { stage: 'init', note: evt.note, student_id: ctx.studentId });
+    await publish(ctx, 'colearner.events.v1', event);
+    write(`round started: ${ctx.sessionId}`);
     return out;
   }
   if (query.startsWith('lifecycle ')) {
     const stage = query.replace(/^lifecycle\s+/, '').trim();
-    if (stage === 'init' || stage === 'plan' || stage === 'practice' || stage === 'review' || stage === 'done') {
-      const evt = { ts: new Date().toISOString(), session_id: ctx.sessionId, stage };
+    if (
+      stage === 'init' ||
+      stage === 'plan' ||
+      stage === 'practice' ||
+      stage === 'review' ||
+      stage === 'done' ||
+      stage === 'note' ||
+      stage === 'insight'
+    ) {
+      const lifecycleStage = stage as LifecycleEvent['stage'];
+      const evt: LifecycleEvent = { ts: new Date().toISOString(), session_id: ctx.sessionId, stage: lifecycleStage };
       appendLifecycle(evt);
-      const event = buildEvent(ctx.role, ctx.sessionId, 'lifecycle', { stage, student_id: ctx.studentId });
+      const event = buildEvent(ctx.role, ctx.sessionId, 'lifecycle', { stage: lifecycleStage, student_id: ctx.studentId });
       await publish(ctx, 'colearner.events.v1', event);
       write(`lifecycle: ${stage}`);
     }
@@ -397,6 +867,16 @@ export async function handleCommand(
   }
   if (query.startsWith('history ')) {
     const id = query.replace(/^history\s+/, '').trim();
+    if (id === 'all') {
+      const events = readLifecycle();
+      write(JSON.stringify(events, null, 2));
+      return out;
+    }
+    if (id === 'summary' || id === '--summary') {
+      const summary = summarizeHistory(readLifecycle());
+      write(JSON.stringify(summary, null, 2));
+      return out;
+    }
     const events = readLifecycle().filter((evt) => evt.session_id === id);
     write(JSON.stringify(events, null, 2));
     return out;
@@ -443,6 +923,60 @@ export async function handleCommand(
   if (query === 'progress') {
     const state = loadState(ctx.statePath);
     write(JSON.stringify(state, null, 2));
+    return out;
+  }
+  if (query.startsWith('complete ')) {
+    const id = query.replace(/^complete\s+/, '').trim();
+    const result = completePlanStep(ctx.statePath, id);
+    write(result.message);
+    if (result.ok) {
+      const next = nextPlanStep(ctx.statePath);
+      if (next.ok && next.step) {
+        write(`next: ${next.step.id} ${next.step.topic}`);
+      }
+    }
+    return out;
+  }
+  if (query === 'next') {
+    const next = nextPlanStep(ctx.statePath);
+    if (!next.ok || !next.step) {
+      write('no next step found');
+      return out;
+    }
+    const explainPaths = extractPathsFromTopic(next.step.topic);
+    const explainTarget = explainPaths.length > 0 ? explainPaths.join(' ') : next.step.topic;
+    write(`next: ${next.step.id} ${next.step.topic}`);
+    write(`try: colearner-ai explain "${explainTarget}"`);
+    write(`try: colearner-ai practice "${next.step.topic}"`);
+    write(`try: colearner-ai complete ${next.step.id}`);
+    write('try: colearner-ai progress');
+    write('try: colearner-ai history');
+    return out;
+  }
+  if (query.startsWith('comment ')) {
+    const note = query.replace(/^comment\s+/, '').trim();
+    if (!note) {
+      write('comment: missing text');
+      return out;
+    }
+    const evt: LifecycleEvent = { ts: new Date().toISOString(), session_id: ctx.sessionId, stage: 'note', note };
+    appendLifecycle(evt);
+    const event = buildEvent(ctx.role, ctx.sessionId, 'lifecycle', { stage: 'note', note, student_id: ctx.studentId });
+    await publish(ctx, 'colearner.events.v1', event);
+    write('comment saved');
+    return out;
+  }
+  if (query.startsWith('insight ')) {
+    const note = query.replace(/^insight\s+/, '').trim();
+    if (!note) {
+      write('insight: missing text');
+      return out;
+    }
+    const evt: LifecycleEvent = { ts: new Date().toISOString(), session_id: ctx.sessionId, stage: 'insight', note };
+    appendLifecycle(evt);
+    const event = buildEvent(ctx.role, ctx.sessionId, 'lifecycle', { stage: 'insight', note, student_id: ctx.studentId });
+    await publish(ctx, 'colearner.events.v1', event);
+    write('insight saved');
     return out;
   }
 

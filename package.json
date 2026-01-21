@@ -1,11 +1,18 @@
 {
   "name": "colearner-ai",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.1",
+  "private": false,
   "type": "module",
   "bin": {
     "colearner-ai": "dist/cli.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "env.example",
+    "docs"
+  ],
   "scripts": {
     "dev": "tsx src/cli.ts",
     "build": "tsc",
@@ -14,6 +21,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
+    "@types/js-yaml": "^4.0.9",
     "tsx": "^4.7.2",
     "typescript": "^5.4.5"
   },

@@ -52,9 +52,27 @@ Outputs: `.colearner/learning.json` and `.colearner/plan.md`.
 co-learner> map this repo
 ```
 
+Evidence-backed explain:
+```text
+colearner-ai explain "docs/overview.md docs/architecture.md"
+```
+
 Kafka mode (optional):
 ```bash
 COLEARNER_BUS=kafka AAFW_HOME=../aafw-home npm run dev
+```
+
+Install anywhere (global):
+```bash
+npm install -g colearner-ai
+colearner-ai init
+colearner-ai learn "ship first PR"
+```
+
+Or run without install:
+```bash
+npx colearner-ai init
+npx colearner-ai learn "ship first PR"
 ```
 
 ## Tutorial: First Session
@@ -85,6 +103,25 @@ co-learner> propose a phased refactor plan for the core modules
 - event stream for transparency.
 - LLM-assisted answers (if API key is set).
 
+## Onboarding Depth (Junior/Mid/Senior)
+Choose a depth before generating a plan:
+- **Junior**: guided, safe tasks, heavy on docs/tests.
+- **Mid**: module ownership, code + tests, controlled refactors.
+- **Senior**: architecture decisions, system tradeoffs, process improvements.
+
+Example:
+```text
+colearner-ai level junior
+colearner-ai learn --scan "consumer protocol handling"
+```
+
+Then move step by step:
+```text
+colearner-ai next --menu
+colearner-ai complete step-1
+colearner-ai next --menu
+```
+
 ## Example Queries
 - "Map this repo and highlight risky modules."
 - "Give me a refactor plan for the API layer."
@@ -95,14 +132,24 @@ co-learner> propose a phased refactor plan for the core modules
 Use these commands in the CLI:
 - `init`: initialize `.colearner/learning.json`.
 - `learn <goal1, goal2>`: generate and store a learning plan.
-- `explain <topic>`: explain a concept at 3 levels.
+- `learn --scan <goal1, goal2>`: include docs/config/code evidence for a more specific plan.
+- `explain <topic>`: explain a concept at 3 levels with evidence (files or keyword scan).
 - `practice <topic>`: generate a safe exercise.
 - `assess <exercise>|<response>`: evaluate a response.
 - `refactor <topic>`: propose a refactor and teach the why/how.
 - `progress`: show learning state.
+- `level <junior|mid|senior>`: set onboarding depth before running `learn`.
+- `next`: show the next step in your learning plan.
+- `next --menu`: interactive menu to run suggested commands.
+- `complete <step-id>`: mark a step complete and advance the plan.
+- `comment <text>`: add a learning note to the session history.
+- `insight <text>`: capture an insight in the session history.
+- `round <name>`: start a new learning round and persist the session id.
 - `lifecycle <init|plan|practice|review|done>`: record a session stage.
 - `history`: show lifecycle history for the current session.
 - `history <session>`: show lifecycle history for a specific session.
+- `history all`: show lifecycle history across all rounds.
+- `history summary`: show a grouped session summary.
 - `evidence <path>|<note>`: send evidence with hash + snippet.
 - `request-evidence <path>|<reason>`: ask for evidence on a file or module.
 - `coach dashboard`: show aggregated progress for multiple students.
@@ -148,6 +195,7 @@ This tool is designed to behave like a practical instructor for onboarding. The 
 
 As a teacher, you can use the CLI to guide onboarding sessions:
 - Start with `learn <goal1, goal2>` to define objectives.
+- Pick a depth with `level <junior|mid|senior>` for junior/mid/senior onboarding.
 - Use `explain <topic>` to introduce concepts with concrete repo context.
 - Use `practice <topic>` for hands-on tasks and `assess <exercise>|<response>` for feedback.
 - Check `progress` to track milestones and confidence.
