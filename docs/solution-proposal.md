@@ -113,6 +113,8 @@ Use existing event schema with new “didactics” events:
 - Use LLM for plan, explanation, exercise, and assessment.
 - Use fast model for summaries.
 - Avoid tool calls if evidence is sufficient.
+- Optional keys: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COLEARNER_MODEL`.
+- No keys: heuristic mode using repo structure and docs.
 
 ## Milestones
 

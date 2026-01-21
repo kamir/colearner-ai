@@ -1,6 +1,13 @@
-import { readFileSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
 import type { Tool } from '../agent/types.js';
 import { isPathAllowed, scopeRoot } from '../utils/scope.js';
+import { getMaxFileBytes, getMaxRunBytes, isPathExtensionAllowed } from '../utils/safety.js';
+
+let runBytes = 0;
+
+export function resetReadBudget(): void {
+  runBytes = 0;
+}
 
 export const fileRead: Tool = {
   name: 'file_read',
@@ -15,7 +22,20 @@ export const fileRead: Tool = {
     if (!isPathAllowed(path)) {
       throw new Error(`path outside scope root: ${scopeRoot()}`);
     }
+    if (!isPathExtensionAllowed(path)) {
+      throw new Error('path extension not allowed');
+    }
+    const maxFileBytes = getMaxFileBytes();
+    const maxRunBytes = getMaxRunBytes();
+    const size = statSync(path).size;
+    if (size > maxFileBytes) {
+      throw new Error(`file too large (${size} bytes > ${maxFileBytes} bytes)`);
+    }
+    if (runBytes + size > maxRunBytes) {
+      throw new Error(`run read budget exceeded (${runBytes + size} bytes > ${maxRunBytes} bytes)`);
+    }
     const data = readFileSync(path, 'utf-8');
+    runBytes += size;
     return {
       path,
       start,

@@ -10,6 +10,12 @@ This module mirrors Dexter's proven structure for agentic loops and adapts it to
 - EventStream: emits uniform events for CLI rendering.
 - LLMProvider: multi-provider wrapper with retry and fast-model summaries.
 
+## Optional Keys
+Co-Learner runs without keys in heuristic mode, but LLM features use:
+- `OPENAI_API_KEY` (optional)
+- `ANTHROPIC_API_KEY` (optional)
+- `COLEARNER_MODEL` (optional)
+
 ## Dataflow
 1) User query enters Agent.
 2) Agent calls LLM with system + iteration prompts.

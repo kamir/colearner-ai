@@ -64,7 +64,8 @@ This test plan validates the end-to-end coach/student flow, didactics features, 
 ### 7) Optional Automated Tests
 - Run `npm test` to execute local sanity checks.
 - Kafka test requires `COLEARNER_TEST_KAFKA=1`.
-- LLM test requires `COLEARNER_TEST_LLM=1` and API keys.
+- LLM test requires `COLEARNER_TEST_LLM=1` and optional keys:
+  `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COLEARNER_MODEL`.
 
 ## Pass/Fail
 - Pass if all expected behaviors are observed.

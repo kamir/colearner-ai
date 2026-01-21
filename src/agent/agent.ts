@@ -4,18 +4,21 @@ import { buildFinalAnswerPrompt, buildIterationPrompt, SYSTEM_PROMPT } from './p
 import { toolByName, toolDescriptions } from '../tools/index.js';
 import { callLlm, chooseTool } from '../llm/provider.js';
 import type { AgentConfig, AgentEvent, ToolSummary } from './types.js';
+import { getMaxIterations } from '../utils/safety.js';
+import { resetReadBudget } from '../tools/file_read.js';
 
-const DEFAULT_MAX_ITERATIONS = 6;
+const DEFAULT_MAX_ITERATIONS = 12;
 
 export class Agent {
   private readonly contextManager = new ContextManager();
   private readonly maxIterations: number;
 
   constructor(config: AgentConfig = {}) {
-    this.maxIterations = config.maxIterations ?? DEFAULT_MAX_ITERATIONS;
+    this.maxIterations = config.maxIterations ?? getMaxIterations() ?? DEFAULT_MAX_ITERATIONS;
   }
 
   async *run(query: string): AsyncGenerator<AgentEvent> {
+    resetReadBudget();
     const scratchpad = new Scratchpad();
     const summaries: ToolSummary[] = [];
     let iteration = 0;

@@ -26,10 +26,26 @@ export OPENAI_API_KEY="your-key"
 export ANTHROPIC_API_KEY="your-key"
 ```
 
+Optional overrides:
+- `OPENAI_API_KEY` (optional)
+- `ANTHROPIC_API_KEY` (optional)
+- `COLEARNER_MODEL` (optional)
+
+No keys? CoLearner still runs in heuristic mode using repo structure and docs.
+
+Tip: copy `env.example` to `.env` and fill in keys.
+
 3) Run the CLI
 ```bash
 npm run dev
 ```
+
+2-minute path (non-interactive):
+```bash
+npm run dev -- init
+npm run dev -- learn "ship first PR"
+```
+Outputs: `.colearner/learning.json` and `.colearner/plan.md`.
 
 4) Ask a question
 ```text
@@ -77,6 +93,7 @@ co-learner> propose a phased refactor plan for the core modules
 
 ## Didactics Commands
 Use these commands in the CLI:
+- `init`: initialize `.colearner/learning.json`.
 - `learn <goal1, goal2>`: generate and store a learning plan.
 - `explain <topic>`: explain a concept at 3 levels.
 - `practice <topic>`: generate a safe exercise.
@@ -92,12 +109,26 @@ Use these commands in the CLI:
 - `student <id>`: set the student identifier for routing.
 - `role <coach|student>`: set the CLI role for filtering.
 - `sync`: poll new events for the current session.
+- `doctor`: run diagnostics (versions, repo size, monorepo hints, env vars, broker).
 
 ## How It Works (Short)
 1) Co-Learner receives a query.
 2) It chooses tools (LLM or heuristic).
 3) Tool results are stored to disk.
 4) It answers with a short plan and test guidance.
+5) The learning plan ends with a first-contribution step (safe task, PR-sized exercise, definition of done).
+
+## Safety and Limits
+- Hard step limits per command (`COLEARNER_MAX_ITERATIONS`).
+- Bounded reads per file and per run (`COLEARNER_MAX_FILE_BYTES`, `COLEARNER_MAX_RUN_BYTES`).
+- Allowlisted file extensions (`COLEARNER_ALLOWED_EXTENSIONS`).
+- Scope enforcement via `COLEARNER_SCOPE_ROOT`.
+- No script execution by default.
+
+## What Co-Learner Will Not Do
+- Execute project scripts or binaries.
+- Read or write files outside `.colearner/` or the scope root.
+- Make network calls unless LLM/Kafka mode is configured.
 
 ## Teacher Section: How the Didactics Work
 

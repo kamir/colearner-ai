@@ -5,6 +5,12 @@
 - role: onboarding and skills mentor for a codebase
 - scope: map structure, define learning objectives, propose refactors, plan tests
 
+## Optional Keys
+Co-Learner works without keys in heuristic mode. For LLM output, set:
+- `OPENAI_API_KEY` (optional)
+- `ANTHROPIC_API_KEY` (optional)
+- `COLEARNER_MODEL` (optional)
+
 ## Prompts
 
 System prompt (template):

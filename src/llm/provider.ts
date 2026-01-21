@@ -22,7 +22,7 @@ function resolveProvider(): Provider | null {
 export async function callLlm(prompt: string, options: LlmOptions = {}): Promise<string> {
   const provider = resolveProvider();
   if (!provider) {
-    throw new Error('No LLM provider configured (set OPENAI_API_KEY or ANTHROPIC_API_KEY).');
+    return 'LLM disabled. Set OPENAI_API_KEY or ANTHROPIC_API_KEY for richer output.';
   }
   if (provider === 'openai') {
     return callOpenAI(prompt, options);
@@ -31,7 +31,7 @@ export async function callLlm(prompt: string, options: LlmOptions = {}): Promise
 }
 
 async function callOpenAI(prompt: string, options: LlmOptions): Promise<string> {
-  const model = options.model ?? 'gpt-4.1';
+  const model = options.model ?? process.env.COLEARNER_MODEL ?? 'gpt-4.1';
   const systemPrompt = options.systemPrompt ?? 'You are a concise assistant.';
   const resp = await fetch(OPENAI_ENDPOINT, {
     method: 'POST',
@@ -57,7 +57,7 @@ async function callOpenAI(prompt: string, options: LlmOptions): Promise<string> 
 }
 
 async function callAnthropic(prompt: string, options: LlmOptions): Promise<string> {
-  const model = options.model ?? 'claude-3-5-sonnet-20241022';
+  const model = options.model ?? process.env.COLEARNER_MODEL ?? 'claude-3-5-sonnet-20241022';
   const systemPrompt = options.systemPrompt ?? 'You are a concise assistant.';
   const resp = await fetch(ANTHROPIC_ENDPOINT, {
     method: 'POST',
